@@ -16,7 +16,10 @@ SETUP_ENVTEST_VERSION ?= release-0.19
 # Kubernetes version of the etcd/kube-apiserver binaries used by envtest
 ENVTEST_K8S_VERSION ?= 1.31.x
 
+CONTROLLER_TOOLS_VERSION ?= v0.17.0
+
 ENVTEST ?= $(LOCALBIN)/setup-envtest
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 
 # Minimum statement coverage (percent) of the controllers package enforced by coverage-check
 COVERAGE_MIN ?= 70
@@ -65,7 +68,7 @@ deploy: manifests
 
 # Generate manifests e.g. CRD, RBAC etc.
 manifests: controller-gen
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	CGO_ENABLED=0 $(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 # Run go fmt against code
 fmt:
@@ -77,7 +80,7 @@ vet:
 
 # Generate code
 generate: controller-gen
-	$(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths="./..."
+	CGO_ENABLED=0 $(CONTROLLER_GEN) object:headerFile=./hack/boilerplate.go.txt paths="./..."
 
 # Build the docker image
 docker-build: test
@@ -93,16 +96,17 @@ $(ENVTEST):
 	mkdir -p $(LOCALBIN)
 	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(SETUP_ENVTEST_VERSION)
 
-# find or download controller-gen
-# download controller-gen if necessary
-controller-gen:
-ifeq (, $(shell which controller-gen))
-	@{ \
-	set -ex ;\
-	mkdir -p bin ;\
-	GOBIN=$$(pwd)/bin go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.17.0 ;\
-	}
-CONTROLLER_GEN=./bin/controller-gen
-else
-CONTROLLER_GEN=$(shell which controller-gen)
-endif
+# Download the pinned controller-gen into ./bin if necessary. A controller-gen already on $PATH is
+# deliberately ignored: other versions generate different output, and old ones (installed via
+# `go get` with cgo) are what broke issue #17. CGO_ENABLED=0 means no C compiler is needed.
+controller-gen: $(CONTROLLER_GEN)
+# The stamp file makes a CONTROLLER_TOOLS_VERSION change trigger a reinstall.
+$(CONTROLLER_GEN): $(LOCALBIN)/.controller-gen-$(CONTROLLER_TOOLS_VERSION)
+	CGO_ENABLED=0 GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+$(LOCALBIN)/.controller-gen-$(CONTROLLER_TOOLS_VERSION):
+	mkdir -p $(LOCALBIN)
+	rm -f $(LOCALBIN)/.controller-gen-* && touch $@
+
+# Fail if generated code or manifests are out of date (e.g. api/ changed without `make generate manifests`)
+verify-generated: generate manifests
+	git diff --exit-code -- api config || { echo "Generated files are stale: run 'make generate manifests' and commit the result"; exit 1; }

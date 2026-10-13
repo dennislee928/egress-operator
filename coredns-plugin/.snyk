@@ -1,0 +1,11 @@
+# Snyk (https://snyk.io) policy file
+version: v1.25.0
+ignore:
+  SNYK-GOLANG-GITHUBCOMCOREDNSCOREDNSPLUGINPKGPROXY-12558120:
+    - '*':
+        reason: >-
+          No fixed CoreDNS release exists (latest v1.14.7 is affected). Upstream DNS spoofing risk in
+          the forward plugin; Dependabot tracks CoreDNS. Re-evaluate when this expires.
+          See docs/security/snyk-triage.md.
+        expires: 2027-01-13T00:00:00.000Z
+        created: 2026-10-13T00:00:00.000Z

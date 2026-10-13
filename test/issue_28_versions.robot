@@ -9,11 +9,11 @@ Test Tags           issue-28
 
 *** Test Cases ***
 Go Toolchain Is Patched And Consistent Across Modules And Dockerfile
-    ${root}=    Get Toolchain    go.mod
+    ${root_toolchain}=    Get Toolchain    go.mod
     ${plugin}=    Get Toolchain    coredns-plugin/go.mod
-    Should Be Equal    ${root}    ${plugin}
-    Version Should Be At Least    ${root}    1.26.6
-    Repo File Should Contain    Dockerfile    FROM golang:${root}@sha256:
+    Should Be Equal    ${root_toolchain}    ${plugin}
+    Version Should Be At Least    ${root_toolchain}    1.26.6
+    Repo File Should Contain    Dockerfile    FROM golang:${root_toolchain}@sha256:
 
 CoreDNS Is At Least 1.14.7
     ${result}=    Command Should Succeed    go    list    -m    -f    {{.Version}}    github.com/coredns/coredns

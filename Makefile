@@ -51,6 +51,12 @@ validate-envoy-config:
 		docker run --rm -v $(LOCALBIN)/envoy-configs:/cfg $(ENVOY_IMAGE) --mode validate -c /cfg/$$(basename $$f) || exit 1; \
 	done
 
+# Build every Dockerfile / compose file in the repo and scan the images with `snyk container test`
+# (see hack/snyk-container-scan.sh --help). SNYK_CONTAINER_ARGS="--base-only" skips the builds.
+SNYK_CONTAINER_ARGS ?=
+snyk-container:
+	hack/snyk-container-scan.sh $(SNYK_CONTAINER_ARGS)
+
 # Run the Robot Framework acceptance suites in test/ (one per fixed issue).
 # Pass ROBOT_ARGS, e.g. ROBOT_ARGS="--include issue-50" or ROBOT_ARGS="--exclude slow".
 ROBOT_ARGS ?=

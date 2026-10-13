@@ -1,7 +1,14 @@
 apiVersion: egress.monzo.com/v1
 kind: ExternalService
 metadata:
-  name: externalservice-sample
+  name: example
 spec:
-  # Add fields here
-  foo: bar
+  # literal hostname of the external destination
+  dnsName: example.com
+  # rewrite DNS answers for example.com to the gateway Service
+  hijackDns: true
+  ports:
+  - port: 443
+    protocol: TCP
+  minReplicas: 1
+  maxReplicas: 3

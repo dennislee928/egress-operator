@@ -51,6 +51,14 @@ validate-envoy-config:
 		docker run --rm -v $(LOCALBIN)/envoy-configs:/cfg $(ENVOY_IMAGE) --mode validate -c /cfg/$$(basename $$f) || exit 1; \
 	done
 
+# Kubernetes Egress Policy Validation Lab: Kind + Calico cluster, deploy from this checkout, check
+# allowed/denied egress (see docs/quickstart.md). KEEP_CLUSTER=1 keeps the cluster afterwards.
+e2e-kind:
+	hack/kind/e2e.sh all
+
+e2e-kind-clean:
+	hack/kind/e2e.sh down
+
 # Build every Dockerfile / compose file in the repo and scan the images with `snyk container test`
 # (see hack/snyk-container-scan.sh --help). SNYK_CONTAINER_ARGS="--base-only" skips the builds.
 SNYK_CONTAINER_ARGS ?=

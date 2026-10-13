@@ -16,6 +16,9 @@ In the `egress-operator-system` namespace, it creates:
 - A service for that deployment
 - A network policy only allowing pods in other namespaces with the label `egress.monzo.com/allowed-<yourservice>: true`
 
+**New here?** Follow the [Quickstart](docs/quickstart.md) to run egress-operator on a local Kind cluster and see
+allowed and blocked egress in action (`make e2e-kind`).
+
 ## Pre-requisites
 
 1. You need to have a private container repository for hosting the egress-operator image, such as an AWS Elastic Container Repository (ECR) or a GCP Container Registry (GCR), which needs to be accessible from your cluster. This will be referred to as `yourrepo` in the instructions below.
@@ -298,6 +301,11 @@ a client wanted. Create one ExternalService per hostname. The CRD rejects values
 * With a default-deny egress policy, client pods must still be allowed to reach the gateway pods in
   `egress-operator-system`, and to reach DNS.
 * NetworkPolicies are only enforced if your CNI supports them (e.g. Calico or Cilium).
+* Gateway pods resolve the destination with the *node's* resolver (`dnsPolicy: Default`), so they don't get their
+  own hijacked answer back. The bundled `public-egress` policy only allows public IPs, so if your node resolver has a
+  private address you also need a policy allowing gateway pods (`app: egress-gateway`) egress on port 53. Without it,
+  clients connect to the gateway but the upstream connection fails (e.g. `curl: (35) ... SSL` errors). See
+  [`hack/kind/manifests/gateway-dns.yaml`](hack/kind/manifests/gateway-dns.yaml).
 * With `hijackDns: true`, traffic to the hostname resolves to the gateway Service. Without it, clients must use the
   gateway Service name (`<name>.egress-operator-system`) directly.
 

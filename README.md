@@ -62,7 +62,7 @@ package should be around 70–75%. `make coverage-check` (run in CI) fails if it
 
 | Error | Cause / fix |
 |-------|-------------|
-| `unable to start the controlplane ... fork/exec /usr/local/kubebuilder/bin/etcd: no such file or directory` | `KUBEBUILDER_ASSETS` isn't set and `go test` was run directly. Use `make test`, or `export KUBEBUILDER_ASSETS=$(./bin/setup-envtest use 1.31.x --bin-dir ./bin -p path)` first. |
+| `unable to start the controlplane ... fork/exec /usr/local/kubebuilder/bin/etcd: no such file or directory` | `KUBEBUILDER_ASSETS` isn't set and `go test` was run directly. Use `make test`, or `export KUBEBUILDER_ASSETS=$(./bin/setup-envtest use 1.31.x --bin-dir "$PWD/bin" -p path)` first (the path must be absolute, since tests run from the package directory). |
 | `setup-envtest` fails to download | The binaries come from GitHub releases. Check your network or proxy, or set `KUBEBUILDER_ASSETS` to pre-downloaded binaries. |
 
 ### Acceptance tests
@@ -121,9 +121,21 @@ make deploy IMG=yourrepo/egress-operator:v0.1
 Once the controller and dns server are running, create ExternalService objects which denote what dns name you want
 to capture traffic for. Dns queries for this name will be rewritten to point to gateway pods.
 
-By default, your client pods need a label `egress.monzo.com/allowed-gateway: nameofgateway` to be able to reach
-the destination, but you can always write an additional NetworkPolicy selecting gateway pods and allowing all traffic,
-for testing purposes.
+By default, your client pods need the label `egress.monzo.com/allowed-<name>: "true"`, where `<name>` is the
+`metadata.name` of the ExternalService, to be able to reach the destination. For the `google` ExternalService below:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+  labels:
+    egress.monzo.com/allowed-google: "true"
+```
+
+You can check the expected label with `kubectl get networkpolicy <name> -n egress-operator-system -o yaml`
+(see `.spec.ingress[].from[].podSelector`). You can always write an additional NetworkPolicy selecting gateway pods and
+allowing all traffic, for testing purposes.
 
 An example ExternalService:
 
@@ -133,6 +145,7 @@ kind: ExternalService
 metadata:
   name: google
 spec:
+  # a literal hostname; wildcards and regular expressions are rejected
   dnsName: google.com
   # optional, defaults to false, instructs dns server to rewrite queries for dnsName
   hijackDns: true
@@ -267,3 +280,50 @@ if you set `spec.serviceTopologyMode: "None"` this will disable topology aware r
 | POD_TOPOLOGY_HOSTNAME_MAX_SKEW_KEY | `kubernetes.io/hostname`                  | Topology key for the hostname constraint                  |
 | POD_TOPOLOGY_HOSTNAME_MAX_SKEW     | Empty, won't inject a hostname constraint | Value of maxSkew for the hostname constraint              |
 | ENABLE_SERVICE_TOPOLOGY_MODE       | Empty, won't add the annotation           | Set to 'true' to add the topology mode service annotation |
+
+## FAQ
+
+### Can `dnsName` be a regular expression or a wildcard? ([#23](https://github.com/monzo/egress-operator/issues/23))
+
+No. Each ExternalService gets its own Envoy gateway Deployment, Service and NetworkPolicy for exactly one destination
+hostname. The gateway proxies TCP/UDP without inspecting the traffic, so it can't tell which of several matching hosts
+a client wanted. Create one ExternalService per hostname. The CRD rejects values that aren't hostnames (for example
+`^foo\.com$` or `*.example.com`).
+
+### My pod can still reach the allow-listed host directly, or can't reach it at all ([#21](https://github.com/monzo/egress-operator/issues/21))
+
+* The operator only *permits* traffic through gateways. Unless a default-deny egress policy is in place (see
+  [Blocking non-gateway traffic](#blocking-non-gateway-traffic)), pods can still reach the internet directly.
+* Client pods need `egress.monzo.com/allowed-<externalservice-name>: "true"`, not `allowed-gateway: <name>`.
+* With a default-deny egress policy, client pods must still be allowed to reach the gateway pods in
+  `egress-operator-system`, and to reach DNS.
+* NetworkPolicies are only enforced if your CNI supports them (e.g. Calico or Cilium).
+* With `hijackDns: true`, traffic to the hostname resolves to the gateway Service. Without it, clients must use the
+  gateway Service name (`<name>.egress-operator-system`) directly.
+
+### Can unrestricted workloads bypass the gateways while restricted ones use them? ([#45](https://github.com/monzo/egress-operator/issues/45))
+
+DNS rewriting by the `egressoperator` plugin applies to every client of the CoreDNS server block it's configured in.
+To rewrite only for some workloads:
+
+* Leave `hijackDns` unset (false) and have restricted workloads call the gateway Service
+  `<name>.egress-operator-system.svc.cluster.local` directly. Everyone else resolves the real address.
+* Or use the CoreDNS [`view`](https://coredns.io/plugins/view/) plugin to split the Corefile into server blocks
+  selected by client address. Only the block for restricted workloads includes `egressoperator`:
+
+  ```Caddy
+  .:53 {
+      view restricted {
+          expr incidr(client_ip(), '10.10.0.0/16')   # e.g. pod CIDR / node pool of restricted workloads
+      }
+      egressoperator egress-operator-system cluster.local
+      kubernetes cluster.local
+      forward . /etc/resolv.conf
+  }
+  .:53 {
+      kubernetes cluster.local
+      forward . /etc/resolv.conf
+  }
+  ```
+
+  Either way, keep the NetworkPolicies as the actual enforcement mechanism. DNS views are only routing.

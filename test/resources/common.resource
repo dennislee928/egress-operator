@@ -39,3 +39,12 @@ Repo File Should Not Contain
     [Arguments]    ${path}    ${unexpected}
     ${content}=    Get File    ${ROOT}${/}${path}
     Should Not Contain    ${content}    ${unexpected}
+
+Run Controller Specs
+    [Documentation]    Run the envtest-based Ginkgo suite, optionally focused on specs matching ${focus}.
+    [Arguments]    ${focus}=${EMPTY}
+    Command Should Succeed    make    envtest    timeout=10 min
+    ${assets}=    Command Should Succeed    bin/setup-envtest    use    1.31.x    --bin-dir    ${ROOT}${/}bin    -p    path
+    ${result}=    Command Should Succeed    go    test    ./controllers/    -count\=1    -v    -ginkgo.v
+    ...    -ginkgo.focus\=${focus}    env:KUBEBUILDER_ASSETS=${assets.stdout}    timeout=10 min
+    RETURN    ${result}

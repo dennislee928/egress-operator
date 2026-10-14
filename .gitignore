@@ -23,3 +23,6 @@ bin
 *.swo
 *~
 /.ignore
+
+# Robot Framework output
+/test/results

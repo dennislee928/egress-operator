@@ -1,0 +1,203 @@
+name: CI
+
+# Each job guards against a class of problem that has bitten this repo before:
+#   lint              formatting, vet, go.mod/go.sum/vendor drift, workflow syntax
+#   verify-generated  stale CRDs/deepcopy, controller-gen breakage (#49, #17)
+#   test              `make test` exactly as documented, coverage floor (#50)
+#   envoy-config      generated Envoy config rejected by the real Envoy (UDP listeners, #28)
+#   coredns-plugin    plugin builds, vets and tests on its own module
+#   docker            both images build (toolchain/Dockerfile drift, #17, #28)
+#   security          known vulnerabilities (govulncheck; Snyk when SNYK_TOKEN is set)
+#   acceptance        Robot Framework suites for every fixed issue (test/)
+#   e2e-kind          real allow/deny egress on Kind + Calico (#10, #21)
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly: surface newly published vulnerabilities
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOVULNCHECK_VERSION: v1.8.0
+  ACTIONLINT_VERSION: v1.7.12
+  KIND_VERSION: v0.33.0
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go' | grep -v '^vendor/'))
+          if [ -n "$unformatted" ]; then echo "Run gofmt on:"; echo "$unformatted"; exit 1; fi
+      - name: go vet
+        run: |
+          go vet ./...
+          (cd coredns-plugin && go vet ./...)
+      - name: go.mod, go.sum and vendor/ are tidy
+        run: |
+          go mod tidy && go mod vendor
+          (cd coredns-plugin && go mod tidy)
+          git diff --exit-code || { echo "Run 'go mod tidy && go mod vendor' (and 'go mod tidy' in coredns-plugin)"; exit 1; }
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}
+
+  verify-generated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make verify-generated
+      - name: API types have no inline structs (#49)
+        run: go test -run TestNoAnonymousStructFields ./api/...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      # Deliberately no KUBEBUILDER_ASSETS / setup-envtest here: `make test` must work on its own (#50)
+      - run: make test
+      - run: make coverage-check
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f cover.out ]; then
+            echo '### Coverage' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            go tool cover -func cover.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
+            go tool cover -func cover.controllers.out | tail -1 | sed 's/^total:/controllers:/' >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: coverage
+          path: cover.out
+          if-no-files-found: ignore
+
+  envoy-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make validate-envoy-config
+
+  coredns-plugin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: coredns-plugin
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: coredns-plugin/go.mod
+      - run: go build -o coredns ./cmd
+      - run: go test ./...
+      - name: Plugins required by the docs are compiled in
+        run: |
+          ./coredns -plugins | grep -Eqx '\s*(dns\.)?egressoperator'
+          ./coredns -plugins | grep -Eqx '\s*(dns\.)?view'
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: coredns-plugin/go.mod
+      - name: Build operator image
+        run: docker buildx build --platform linux/amd64 -t egress-operator:ci .
+      - name: Build CoreDNS plugin image
+        run: |
+          make -C coredns-plugin build
+          docker buildx build --platform linux/amd64 -t egress-operator-coredns:ci coredns-plugin
+
+  security:
+    runs-on: ubuntu-latest
+    env:
+      # Optional: Snyk steps run only when the repository has this secret
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck (operator)
+        run: go run golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} ./...
+      - name: govulncheck (coredns-plugin)
+        working-directory: coredns-plugin
+        run: go run golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} ./...
+      - name: Snyk open source + code
+        if: env.SNYK_TOKEN != ''
+        run: |
+          npx --yes snyk test --all-projects
+          npx --yes snyk code test
+      - name: Snyk container (final-stage base images)
+        if: env.SNYK_TOKEN != ''
+        run: hack/snyk-container-scan.sh --base-only
+
+  acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v10.2.0
+      # e2e runs in its own job; Snyk checks skip themselves without credentials
+      - run: make robot ROBOT_ARGS="--exclude e2e"
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: robot-acceptance
+          path: test/results
+
+  e2e-kind:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Install kind
+        run: go install sigs.k8s.io/kind@${KIND_VERSION} && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Egress policy validation lab
+        run: make robot ROBOT_ARGS="--include issue-10"
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl --context kind-egress-lab get pods,svc,networkpolicy -A -o wide || true
+          kubectl --context kind-egress-lab -n egress-operator-system logs deploy/egress-operator-controller-manager -c manager --tail=100 || true
+          kubectl --context kind-egress-lab -n egress-operator-system logs deploy/example --tail=100 || true
+          kubectl --context kind-egress-lab -n kube-system logs deploy/coredns --tail=100 || true
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: robot-e2e
+          path: test/results

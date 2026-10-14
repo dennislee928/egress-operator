@@ -1,0 +1,10 @@
+# Snyk (https://snyk.io) policy file
+version: v1.25.0
+# Third-party code is excluded from `snyk code test` (SAST). Vendored modules are scanned for
+# known vulnerabilities by `snyk test` / govulncheck instead, and fixed by upgrading them.
+# See docs/security/snyk-triage.md.
+exclude:
+  global:
+    - vendor/**
+    - bin/**
+    - test/results/**

@@ -369,3 +369,47 @@ staticResources:
 		})
 	}
 }
+
+func Test_envoyConfig_IpOverride(t *testing.T) {
+	tcp := corev1.ProtocolTCP
+	es := &egressv1.ExternalService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "foo",
+			Namespace: "foo",
+		},
+		Spec: egressv1.ExternalServiceSpec{
+			DnsName: "example.com",
+			Ports: []egressv1.ExternalServicePort{
+				{
+					Port:     443,
+					Protocol: &tcp,
+				},
+			},
+			IpOverride:           []string{"10.1.2.3"},
+			EnvoyDnsRefreshRateS: 30,
+			EnvoyRespectDnsTTL:   true,
+		},
+	}
+
+	got, err := envoyConfig(es)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"foo_TCP_443-override",
+		"foo_TCP_443-aggregate",
+		"10.1.2.3",
+		"envoy.clusters.aggregate",
+		"dnsRefreshRate: 30s",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("envoy config missing %q\n%s", want, got)
+		}
+	}
+	if dir := os.Getenv("ENVOY_CONFIG_DUMP_DIR"); dir != "" {
+		file := filepath.Join(dir, "ip_override.yaml")
+		if err := os.WriteFile(file, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
